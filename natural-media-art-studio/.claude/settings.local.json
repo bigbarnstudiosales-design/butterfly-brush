@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"D:/Brushes\" 2>&1)",
+      "Bash(unzip -l \"D:/Brushes/natural-media-art-studio.zip\")",
+      "Bash(mkdir -p \"D:/Brushes/public/paper-textures\")",
+      "Bash(cp \"D:/Brushes/Arches-140-Watercolor-Cold.jpg\" \"D:/Brushes/public/paper-textures/arches-140-cold-press.jpg\")",
+      "Bash(npm install *)",
+      "Bash(npm run *)"
+    ]
+  }
+}

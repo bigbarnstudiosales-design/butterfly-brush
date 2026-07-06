@@ -1,0 +1,6 @@
+{
+  "name": "Natural Media Art Studio",
+  "description": "A high-fidelity natural media painting and drawing app featuring Kubelka-Munk pigment blending, Navier-Stokes fluid simulation, multi-layer canvas, custom studios for media, pens, and paper, and an innovative spatial radial menu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
