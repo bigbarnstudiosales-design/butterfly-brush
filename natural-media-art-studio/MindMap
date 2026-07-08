@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painting App Architecture — Interactive Map</title>
+<style>
+  :root{
+    --bg:#fbfaf8; --panel:#ffffff; --border:#e4e0d8; --text:#2b2822; --text-dim:#6b6558;
+    --coral:#D85A30; --blue:#378ADD; --purple:#7B5AC7; --amber:#BA7517; --teal:#1D9E75;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;}
+  #app{max-width:920px;margin:0 auto;padding:20px 20px 60px;}
+  .crumbs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:18px;font-size:13px;color:var(--text-dim);}
+  .crumbs button{background:none;border:none;color:var(--blue);cursor:pointer;font-size:13px;padding:2px 4px;text-decoration:underline;}
+  .crumbs button:last-child{color:var(--text-dim);text-decoration:none;cursor:default;}
+  .crumbs span{color:var(--text-dim);}
+  h1{font-size:22px;margin:0 0 4px;}
+  h2{font-size:19px;margin:0 0 10px;}
+  h3{font-size:15px;margin:18px 0 8px;}
+  p{line-height:1.55;font-size:14.5px;}
+  .sub{color:var(--text-dim);font-size:13.5px;margin:0 0 20px;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0;}
+  @media(max-width:600px){.grid{grid-template-columns:1fr;}}
+  .node{border:1px solid var(--border);border-radius:12px;padding:14px 16px;background:var(--panel);
+    cursor:pointer;text-align:left;transition:box-shadow .15s,border-color .15s;}
+  .node:hover{box-shadow:0 2px 10px rgba(0,0,0,0.07);}
+  .node .t{font-weight:600;font-size:14.5px;margin-bottom:4px;}
+  .node .d{font-size:12.5px;color:var(--text-dim);line-height:1.4;}
+  .tag{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;
+    padding:2px 7px;border-radius:20px;margin-bottom:8px;}
+  .tag-open{background:#f2ede0;color:#8a7f5c;}
+  .tag-live{background:#e4f2ec;color:var(--teal);}
+  ul{padding-left:20px;font-size:14px;line-height:1.6;}
+  .card{border:1px solid var(--border);border-radius:12px;padding:16px;background:var(--panel);margin:14px 0;}
+  .demo-shell{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:14px;margin:16px 0;}
+  .controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:12.5px;color:var(--text-dim);}
+  .controls button{border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:5px 10px;
+    font-size:12.5px;cursor:pointer;color:var(--text);}
+  .controls button.active{border-color:var(--coral);color:var(--coral);}
+  .controls input[type=range]{width:100px;vertical-align:middle;}
+  canvas{display:block;width:100%;border:1px solid var(--border);border-radius:10px;background:var(--panel);touch-action:none;}
+  .hint{font-size:12px;color:var(--text-dim);margin-top:8px;}
+  svg{width:100%;height:auto;display:block;}
+  .svgnode{cursor:pointer;}
+  .svgnode:hover rect{filter:brightness(0.97);}
+  .flag{font-size:12px;color:#8a7f5c;background:#f2ede0;border-radius:8px;padding:6px 10px;margin-top:10px;display:inline-block;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ---------------- router ---------------- */
+var hist = ['hub'];
+var cleanup = null;
+function setCleanup(fn){ cleanup = fn; }
+function nav(view){ hist.push(view); render(); scrollTo(0,0); }
+function jump(i){ hist = hist.slice(0,i+1); render(); scrollTo(0,0); }
+var LABELS = {
+  hub:'Overview', brushEngine:'Brush Engine', brushShape:'Shape Definition',
+  brushDeform:'Deformation Physics', brushLoad:'Load & Depletion', brushContact:'Contact & Pressure',
+  fluidEngine:'Fluid Engine', fluidMedium:'Medium Definition', fluidFlow:'Flow Behavior',
+  fluidDrying:'Drying System', fluidStroke:'Stroke Interaction',
+  pigmentEngine:'Pigment Engine', textureEngine:'Texture Engine', canvasStateEngine:'Canvas State',
+  history:'Design History & Corrections'
+};
+function render(){
+  if(cleanup){ cleanup(); cleanup=null; }
+  var app = document.getElementById('app');
+  app.innerHTML = '';
+  var crumbBar = document.createElement('div'); crumbBar.className='crumbs';
+  hist.forEach(function(v,i){
+    var b = document.createElement('button');
+    b.textContent = LABELS[v] || v;
+    b.onclick = function(){ jump(i); };
+    crumbBar.appendChild(b);
+    if(i<hist.length-1){ var s=document.createElement('span'); s.textContent='›'; crumbBar.appendChild(s); }
+  });
+  app.appendChild(crumbBar);
+  var content = document.createElement('div');
+  app.appendChild(content);
+  VIEWS[hist[hist.length-1]](content);
+}
+function node(container,color,title,desc,view,tag){
+  var el = document.createElement('div');
+  el.className='node'; el.style.borderLeft='4px solid '+color;
+  el.innerHTML = (tag?'<span class="tag '+(tag==='live'?'tag-live':'tag-open')+'">'+(tag==='live'?'Includes demo':'Not yet explored')+'</span><br>':'')+
+    '<div class="t">'+title+'</div><div class="d">'+desc+'</div>';
+  el.onclick = function(){ nav(view); };
+  container.appendChild(el);
+}
+function backBtn(container,toView,label){
+  var b=document.createElement('button');
+  b.textContent='← '+label; b.style.cssText='border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;margin-bottom:14px;color:var(--text);';
+  b.onclick=function(){nav(toView);};
+  container.appendChild(b);
+}
+
+/* ---------------- views ---------------- */
+var VIEWS = {};
+
+VIEWS.hub = function(c){
+  c.innerHTML = '<h1>Natural-Media Painting App</h1><p class="sub">Five engines, one deposit cycle. Click any stage to drill in — sub-systems and live demos are nested below.</p>';
+  var svg = document.createElement('div');
+  svg.innerHTML = '<svg viewBox="0 0 640 560">'+
+    '<path d="M120 500 L60 500 L60 60 L118 60" fill="none" stroke="#c9c3b6" stroke-width="1.5"/>'+
+    '<text x="52" y="280" text-anchor="end" font-size="11" fill="#8a8474">paper resists brush</text>'+
+    box(120,30,400,80,'#D85A30','Brush Engine','Vector shape · bends, twists, flicks · finite bristle volume','brushEngine')+
+    arrow(320,110,320,140)+
+    box(120,148,400,80,'#378ADD','Fluid Engine','Medium behavior · flow · drying clock · stroke interaction','fluidEngine')+
+    arrow(320,228,320,258)+
+    box(120,266,400,80,'#7B5AC7','Pigment Engine','True subtractive color mixing · medium-dependent opacity','pigmentEngine')+
+    arrow(320,346,320,376)+
+    box(120,384,400,80,'#1D9E75','Canvas State','Everything on the paper right now · wet/drying/dried layers','canvasStateEngine')+
+    arrow(320,464,320,494,true)+
+    box(120,470,400,74,'#BA7517','Texture Engine','Permanent paper surface · tooth and grain','textureEngine')+
+    '</svg>';
+  c.appendChild(svg);
+  wireSvgNav(svg);
+  var histBtn=document.createElement('div');
+  histBtn.className='node'; histBtn.style.borderLeft='4px solid #999';
+  histBtn.innerHTML='<div class="t">Design History &amp; Corrections</div><div class="d">The wrong turns and fixes that shaped this architecture — worth reading once.</div>';
+  histBtn.onclick=function(){nav('history');};
+  histBtn.style.marginTop='16px';
+  c.appendChild(histBtn);
+};
+function box(x,y,w,h,color,title,desc,view){
+  return '<g class="svgnode" data-view="'+view+'">'+
+    '<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'" rx="12" fill="#fff" stroke="'+color+'" stroke-width="1.5"/>'+
+    '<text x="'+(x+16)+'" y="'+(y+26)+'" font-size="15" font-weight="600" fill="'+color+'">'+title+'</text>'+
+    '<text x="'+(x+16)+'" y="'+(y+48)+'" font-size="11.5" fill="#6b6558">'+desc+'</text>'+
+    '</g>';
+}
+function arrow(x1,y1,x2,y2,rev){
+  var m1='M'+x1+' '+y1+' L'+x2+' '+y2;
+  return '<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#8a8474" stroke-width="1.5"/></marker></defs>'+
+    '<path d="'+m1+'" stroke="#8a8474" stroke-width="1.5" marker-end="url(#ah)" '+(rev?'marker-start="url(#ah)"':'')+'/>';
+}
+function wireSvgNav(root){
+  root.querySelectorAll('.svgnode').forEach(function(g){
+    g.addEventListener('click',function(){ nav(g.getAttribute('data-view')); });
+  });
+}
+
+VIEWS.brushEngine = function(c){
+  backBtn(c,'hub','Overview');
+  c.innerHTML += '<h2>Brush Engine</h2><p class="sub">A vector shape mimicking real brush stamps, bounded by total bristle volume, deforming with geometric logic rather than randomness.</p>';
+  var g=document.createElement('div'); g.className='grid'; c.appendChild(g);
+  node(g,'#1D9E75','Shape Definition','What the brush is at rest — family, footprint, bristle volume ceiling.','brushShape','open');
+  node(g,'#D85A30','Deformation Physics','Rigid direction-dependent sweep + bend/twist/flick recovery. The most developed sub-system.','brushDeform','live');
+  node(g,'#378ADD','Load & Depletion','The finite paint reservoir — rich stroke start, dry-brush tail.','brushLoad','open');
+  node(g,'#7B5AC7','Contact & Pressure','Splay under pressure and tilt, reading paper roughness.','brushContact','open');
+};
+
+VIEWS.brushDeform = function(c){
+  backBtn(c,'brushEngine','Brush Engine');
+  c.innerHTML += '<h2>Deformation Physics</h2>'+
+    '<p>Two independent layers. <b>Layer A</b> — a fixed-orientation rigid footprint, literally stamped along your drag path. Width is a pure geometry consequence: perpendicular drag sweeps the full edge (wide band), parallel drag slices edge-on (hairline) — same brush, same hold-angle, direction alone changes it. <b>Layer B</b> — sits on top, only affects the live shape you see, never the trail: one damped spring value drives bend, taper, twist-on-turns, and a snap back to the exact rest shape the instant you stop.</p>'+
+    '<div class="flag">⚠️ Pressure and tilt currently produce the same effect (thickness scale) — physically they should differ (tilt reshapes the contact patch, pressure grows it), simplified for this demo.</div>';
+  var shell=document.createElement('div'); shell.className='demo-shell'; c.appendChild(shell);
+  initBrushDemo(shell);
+};
+VIEWS.brushShape = function(c){
+  backBtn(c,'brushEngine','Brush Engine');
+  c.innerHTML += '<h2>Shape Definition</h2><span class="tag tag-open">Not yet explored</span>'+
+  '<ul><li>Brush family: round, flat (chisel), filbert, fan — each a different resting silhouette</li>'+
+  '<li>Resting vector footprint and taper</li>'+
+  '<li><b>Bristle volume ceiling</b> — a hard limit on how far deformation is allowed to stretch/splay/squish, so a flick can never produce more shape than the brush has hair for</li></ul>';
+};
+VIEWS.brushLoad = function(c){
+  backBtn(c,'brushEngine','Brush Engine');
+  c.innerHTML += '<h2>Load & Depletion</h2><span class="tag tag-open">Not yet explored</span>'+
+  '<ul><li>Brush carries a finite reservoir of paint/water</li>'+
+  '<li>Fluid Engine draws from this reservoir as it deposits — depletes over a stroke, rich to dry-brush</li>'+
+  '<li>Refilled by dipping in paint or water (real user action)</li>'+
+  '<li>Bidirectional with Contact &amp; Pressure: load changes splay; pressure changes depletion rate</li></ul>';
+};
+VIEWS.brushContact = function(c){
+  backBtn(c,'brushEngine','Brush Engine');
+  c.innerHTML += '<h2>Contact & Pressure</h2><span class="tag tag-open">Not yet explored</span>'+
+  '<ul><li>Splay widens under downward force</li>'+
+  '<li>Tilt changes the contact patch shape</li>'+
+  '<li>Reads paper roughness from the Texture Engine</li>'+
+  '<li>Feeds the deforming footprint down into what actually touches the paper</li></ul>';
+};
+
+VIEWS.fluidEngine = function(c){
+  backBtn(c,'hub','Overview');
+  c.innerHTML += '<h2>Fluid Engine</h2><p class="sub">Mimics watercolor, oil, or ink. The brush pushes the simulation; medium definition changes how it behaves and how strokes interact.</p>';
+  var g=document.createElement('div'); g.className='grid'; c.appendChild(g);
+  node(g,'#1D9E75','Medium Definition','Viscosity, surface tension, rewettability — three independent axes, not one label.','fluidMedium','live');
+  node(g,'#378ADD','Flow Behavior','Gravity, spread rate, edge diffusion — how fluid moves once deposited.','fluidFlow','live');
+  node(g,'#D85A30','Drying System','The single clock — four wetness states, artist-adjustable speed.','fluidDrying','live');
+  node(g,'#7B5AC7','Stroke Interaction','Wet-on-wet, wet-on-damp, wet-on-tacky, wet-on-dry, and lifting.','fluidStroke','live');
+};
+
+VIEWS.fluidMedium = function(c){
+  backBtn(c,'fluidEngine','Fluid Engine');
+  c.innerHTML += '<h2>Medium Definition</h2>'+
+  '<p>Three independent properties. <b>Viscosity</b> — resting thickness plus shear-thinning (paint thins under active brush motion, thickens at rest). <b>Surface tension</b> — cohesion (wants to bead) vs. wetting coefficient (spreads on this specific paper — a relationship, not a fixed number). <b>Rewettability</b> — not binary: strength plus a window (indefinite for gum-arabic media, a short window for acrylic, zero for oil/ink).</p>';
+  var shell=document.createElement('div'); shell.className='demo-shell'; c.appendChild(shell);
+  initMediumDemo(shell);
+  c.innerHTML += '<div class="flag">⚠️ The reference numbers behind each preset are illustrative starting points, not measured data.</div>';
+};
+
+VIEWS.fluidFlow = function(c){
+  backBtn(c,'fluidEngine','Fluid Engine');
+  c.innerHTML += '<h2>Flow Behavior</h2>'+
+  '<p>Gravity sensitivity is inherited from viscosity — thin fluid obeys a tilt almost instantly, thick fluid resists it. Spread rate is viscosity <i>combined with</i> how much time the drying clock allows before it locks — which is why ink (thin, but sets fast) ends up more compact than watercolor despite similar viscosity. Edge diffusion softens further as a puddle spreads, tied to surface tension.</p>';
+  var shell=document.createElement('div'); shell.className='demo-shell'; c.appendChild(shell);
+  initFlowDemo(shell);
+};
+
+VIEWS.fluidDrying = function(c){
+  backBtn(c,'fluidEngine','Fluid Engine');
+  c.innerHTML += '<h2>Drying System</h2>'+
+  '<p>An exponential decay curve, not linear. Four threshold states gate different stroke-interaction behavior: <b>Wet</b> (≥70%, full blend freedom), <b>Damp</b> (40–70%, blooms/backruns), <b>Tacky</b> (10–40%, mostly locked), <b>Dry</b> (&lt;10%, hard edges). The speed slider stretches or compresses the time axis without changing the curve\'s shape — like studio humidity. Every point on the canvas gets its own independent timer.</p>';
+  var shell=document.createElement('div'); shell.className='demo-shell'; c.appendChild(shell);
+  initDryingDemo(shell);
+  c.innerHTML += '<div class="flag">⚠️ Demo timings are compressed for legibility (real watercolor stays workable for minutes, not seconds) — the ratio between mediums is the meaningful part, not the absolute seconds.</div>';
+};
+
+VIEWS.fluidStroke = function(c){
+  backBtn(c,'fluidEngine','Fluid Engine');
+  c.innerHTML += '<h2>Stroke Interaction</h2>'+
+  '<p>What happens when new paint meets what\'s already on the canvas, gated by that surface\'s current wetness state. Blooms form specifically at the wet/damp <i>boundary</i>, not uniformly — wet paint has more energy than damp paint can resist. Lifting reverses the normal deposit direction entirely.</p>';
+  var shell=document.createElement('div'); shell.className='demo-shell'; c.appendChild(shell);
+  initStrokeDemo(shell);
+};
+
+VIEWS.pigmentEngine = function(c){
+  backBtn(c,'hub','Overview');
+  c.innerHTML += '<h2>Pigment Engine</h2><span class="tag tag-open">Not yet explored</span>'+
+  '<p>Color mixing and management. Requirement was explicit and emphatic: true subtractive mixing (yellow + blue = green), not RGB nearest-neighbor approximation — Rebelle-level, not Procreate-level.</p>'+
+  '<ul><li>True subtractive color mixing model — <b>open question:</b> Kubelka-Munk is the standard real-world candidate, unresearched so far</li>'+
+  '<li>Opacity/appearance is medium-dependent, read from Fluid Engine\'s medium definition and live wetness</li>'+
+  '<li>Concentration/intensity and drying-shift read the Fluid Engine\'s single drying clock rather than running an independent timer</li></ul>';
+};
+VIEWS.textureEngine = function(c){
+  backBtn(c,'hub','Overview');
+  c.innerHTML += '<h2>Texture Engine</h2><span class="tag tag-open">Not yet explored</span>'+
+  '<p>The base layer connecting back to the brush. Same medium + same brush looks very different on watercolor paper vs. Bristol.</p>'+
+  '<ul><li>Represents paper/canvas tooth and grain as a height-field-like surface</li>'+
+  '<li>Valleys hold more pigment, peaks stay lighter (drybrush-on-rough effect)</li>'+
+  '<li>Permanent — never changes during painting, unlike Canvas State above it</li>'+
+  '<li><b>Open question:</b> procedural noise field vs. photographed height maps vs. parametric roughness per paper type — undecided</li></ul>';
+};
+VIEWS.canvasStateEngine = function(c){
+  backBtn(c,'hub','Overview');
+  c.innerHTML += '<h2>Canvas State</h2><span class="tag tag-open">Not yet explored</span>'+
+  '<p>The layer that was originally missing from the design — see Design History. Everything currently on the paper: wet, drying, or dried paint accumulated from every stroke so far, distinct from the permanent paper beneath it.</p>'+
+  '<ul><li>Every engine above reads from it — drag resistance, wet-on-wet eligibility, what color is already present</li>'+
+  '<li>Owns the per-point wetness timers from the Drying System</li>'+
+  '<li>Supports bidirectional flow for lifting/blotting/scraping</li>'+
+  '<li><b>Open question:</b> concrete data structure not yet designed</li></ul>';
+};
+
+VIEWS.history = function(c){
+  backBtn(c,'hub','Overview');
+  c.innerHTML += '<h2>Design History &amp; Corrections</h2><p class="sub">The wrong turns and fixes that shaped this architecture — useful so they don\'t get repeated.</p>'+
+  '<div class="card"><b>1. Canvas State was originally missing entirely.</b> The first four-engine version had no home for "what\'s already on the paper" from previous strokes. Added as its own layer.</div>'+
+  '<div class="card"><b>2. Brush load (finite reservoir) was originally missing.</b> Without it every point along a stroke deposits identically — an obvious digital tell.</div>'+
+  '<div class="card"><b>3. Two independent drying clocks would have drifted.</b> Corrected to a single-clock rule: Fluid Engine owns wetness-over-time, Pigment Engine only reads it.</div>'+
+  '<div class="card"><b>4. Flow was originally one-directional only.</b> Real painting also lifts/picks up paint. Corrected to bidirectional arrows (except Texture → Canvas State, which stays one-way since paper never changes).</div>'+
+  '<div class="card"><b>5. First deformation-physics attempt used many independent per-point springs</b> with no geometric logic — chaotic, directionless wobbling. Corrected to the two-layer model: rigid geometry drives the trail, one damped scalar drives visible bend/twist/flick.</div>'+
+  '<div class="card"><b>6. First flat-brush width model rotated the effective edge toward drag direction</b> — physically wrong. Real reference photos confirmed a flat brush holds a fixed edge angle regardless of drag direction; width variation is a sweep/projection effect. Corrected by literally stamping a rigid, fixed-orientation footprint along the path.</div>'+
+  '<div class="card"><b>7. Jitter had a nonzero idle baseline</b>, causing constant tiny motion at rest. Fixed by making all jitter a pure multiple of the drift scalar, snapping drift to exactly zero near rest, and switching to plain undeformed geometry below a gate threshold.</div>'+
+  '<div class="card"><b>8. Round and Filbert were initially given the same triangular treatment as Flat.</b> Corrected: Round is a fundamentally different shape family (circle-to-teardrop via tangent construction). Filbert deferred entirely.</div>'+
+  '<div class="card"><b>9. A generic AI-search-overview document was fact-checked mid-conversation</b> and found partially useful (tilt/azimuth as real stylus hardware input — validated, not yet implemented) and partially filler (trivial circle-equation claims, unrelated generative-art tangents).</div>';
+};
+
+/* ---------------- shared demo helpers ---------------- */
+function rgba(hex,a){var h=hex.replace('#','');if(h.length===3)h=h.split('').map(function(x){return x+x}).join('');var n=parseInt(h,16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
+function fitCanvas(cv,ctx){var r=cv.getBoundingClientRect();var d=window.devicePixelRatio||1;cv.width=r.width*d;cv.height=r.height*d;ctx.setTransform(d,0,0,d,0,0);return{w:r.width,h:r.height};}
+
+/* ---------------- DEMO: brush deformation (round/flat, rigid sweep + bend/twist/flick) ---------------- */
+function initBrushDemo(shell){
+  shell.innerHTML =
+    '<div class="controls">'+
+    '<button id="bs0" class="active">Round</button><button id="bs1">Flat</button>'+
+    '<label>Brush angle <input type="range" id="bEdge" min="0" max="180" step="1" value="90"></label>'+
+    '<label>Pressure <input type="range" id="bPress" min="0" max="1" step="0.02" value="0.3"></label>'+
+    '<label>Handle tilt <input type="range" id="bTilt" min="0" max="1" step="0.02" value="0"></label>'+
+    '<button id="bClear">Clear</button>'+
+    '</div>'+
+    '<div style="position:relative;width:100%;height:300px;">'+
+    '<canvas id="bInk" style="position:absolute;inset:0;height:100%;"></canvas>'+
+    '<canvas id="bLive" style="position:absolute;inset:0;height:100%;"></canvas>'+
+    '</div>'+
+    '<p class="hint">Brush angle 90°: drag sideways for full width, drag up/down for a hairline. Watch the live shape bend and snap back on release.</p>';
+  var inkCv=shell.querySelector('#bInk'), inkCtx=inkCv.getContext('2d');
+  var cv=shell.querySelector('#bLive'), ctx=cv.getContext('2d');
+  var edgeEl=shell.querySelector('#bEdge'), pressEl=shell.querySelector('#bPress'), tiltEl=shell.querySelector('#bTilt');
+  var s0=shell.querySelector('#bs0'), s1=shell.querySelector('#bs1');
+  var W=0,H=0,shapeIdx=0,core={x:0,y:0},down=false,lastStamp=null,lastT=0;
+  var heading=-Math.PI/2,prevHeadingT=-Math.PI/2,twistS=0,drift=0,driftVel=0,GATE=0.03;
+  var jp=[Math.random()*10,Math.random()*10,Math.random()*10,Math.random()*10];
+  var inkColor='#5a5248';
+  function resizeAll(){
+    var r=cv.getBoundingClientRect(),d=window.devicePixelRatio||1;
+    var prev=document.createElement('canvas');prev.width=inkCv.width;prev.height=inkCv.height;
+    prev.getContext('2d').drawImage(inkCv,0,0);
+    inkCv.width=r.width*d;inkCv.height=r.height*d;inkCtx.setTransform(d,0,0,d,0,0);
+    if(prev.width>0)inkCtx.drawImage(prev,0,0,prev.width,prev.height,0,0,r.width,r.height);
+    cv.width=r.width*d;cv.height=r.height*d;ctx.setTransform(d,0,0,d,0,0);
+    W=r.width;H=r.height;core.x=W/2;core.y=H/2;
+  }
+  function setShape(i){shapeIdx=i;s0.classList.toggle('active',i===0);s1.classList.toggle('active',i===1);edgeEl.parentElement.style.opacity=(i===1?'1':'0.4');}
+  s0.onclick=function(){setShape(0);}; s1.onclick=function(){setShape(1);};
+  shell.querySelector('#bClear').onclick=function(){var r=inkCv.getBoundingClientRect();inkCtx.clearRect(0,0,r.width,r.height);};
+  function metrics(){
+    var p=parseFloat(pressEl.value),t=parseFloat(tiltEl.value);
+    if(shapeIdx===0) return{type:'round',r:9+p*9+t*6};
+    return{type:'flat',length:46,thickness:7+p*14+t*10,angle:parseFloat(edgeEl.value)*Math.PI/180};
+  }
+  function stampAt(g,x,y,ctxT,alpha){
+    if(g.type==='round'){ctxT.fillStyle=rgba(inkColor,alpha);ctxT.beginPath();ctxT.arc(x,y,g.r,0,Math.PI*2);ctxT.fill();}
+    else{
+      ctxT.save();ctxT.translate(x,y);ctxT.rotate(g.angle);
+      var L=g.length,Tt=g.thickness,rr=Tt/2;
+      ctxT.fillStyle=rgba(inkColor,alpha);ctxT.beginPath();
+      if(ctxT.roundRect){ctxT.roundRect(-L/2,-Tt/2,L,Tt,rr);}
+      else{ctxT.moveTo(-L/2+rr,-Tt/2);ctxT.lineTo(L/2-rr,-Tt/2);ctxT.arc(L/2-rr,0,rr,-Math.PI/2,Math.PI/2);ctxT.lineTo(-L/2+rr,Tt/2);ctxT.arc(-L/2+rr,0,rr,Math.PI/2,Math.PI*1.5);}
+      ctxT.fill();ctxT.restore();
+    }
+  }
+  function getPos(e){var r=cv.getBoundingClientRect();var p=(e.touches?e.touches[0]:e);return{x:p.clientX-r.left,y:p.clientY-r.top};}
+  cv.addEventListener('pointerdown',function(e){cv.setPointerCapture(e.pointerId);var p=getPos(e);core.x=p.x;core.y=p.y;down=true;lastStamp=p;lastT=performance.now();stampAt(metrics(),p.x,p.y,inkCtx,0.55);});
+  cv.addEventListener('pointermove',function(e){
+    if(!down)return;var p=getPos(e);var now=performance.now();var dt=Math.max((now-lastT)/1000,0.001);
+    var vx=(p.x-core.x)/dt,vy=(p.y-core.y)/dt,sp=Math.hypot(vx,vy);
+    if(sp>3)heading=Math.atan2(vy,vx);
+    window._bSpeed=sp;
+    var g=metrics();var dist=Math.hypot(p.x-lastStamp.x,p.y-lastStamp.y);
+    var spacing=Math.max((g.type==='round'?g.r:g.thickness)*0.35,2);
+    var steps=Math.max(1,Math.floor(dist/spacing));
+    for(var i=1;i<=steps;i++){var t=i/steps;stampAt(g,lastStamp.x+(p.x-lastStamp.x)*t,lastStamp.y+(p.y-lastStamp.y)*t,inkCtx,0.5);}
+    lastStamp=p;core.x=p.x;core.y=p.y;lastT=now;
+  });
+  function up(){down=false;window._bSpeed=0;}
+  cv.addEventListener('pointerup',up);cv.addEventListener('pointerleave',up);cv.addEventListener('pointercancel',up);
+  function edgeJit(p1x,p1y,p2x,p2y,frac,ph,amp){var mx=p1x+(p2x-p1x)*frac,my=p1y+(p2y-p1y)*frac;var ex=p2x-p1x,ey=p2y-p1y,len=Math.hypot(ex,ey)||1;var nx=-ey/len,ny=ex/len,j=Math.sin(ph)*amp;return{x:mx+nx*j,y:my+ny*j};}
+  function drawFlatLive(g){
+    var eDx=Math.cos(g.angle),eDy=Math.sin(g.angle),hDx=Math.cos(heading),hDy=Math.sin(heading);
+    var alignA=eDx*hDx+eDy*hDy;
+    var trailA=drift*Math.max(-alignA,0),trailB=drift*Math.max(alignA,0);
+    var maxBend=g.length*0.85;
+    var A0x=core.x+eDx*g.length/2,A0y=core.y+eDy*g.length/2,B0x=core.x-eDx*g.length/2,B0y=core.y-eDy*g.length/2;
+    var Ax=A0x-hDx*trailA*maxBend,Ay=A0y-hDy*trailA*maxBend,Bx=B0x-hDx*trailB*maxBend,By=B0y-hDy*trailB*maxBend;
+    var perpAngle=g.angle+Math.PI/2+twistS,pDx=Math.cos(perpAngle),pDy=Math.sin(perpAngle);
+    var scaleA=1-trailA*0.55,scaleB=1-trailB*0.55,hT=g.thickness/2;
+    var Atop={x:Ax+pDx*hT*scaleA,y:Ay+pDy*hT*scaleA},Abot={x:Ax-pDx*hT*scaleA,y:Ay-pDy*hT*scaleA};
+    var Btop={x:Bx+pDx*hT*scaleB,y:By+pDy*hT*scaleB},Bbot={x:Bx-pDx*hT*scaleB,y:By-pDy*hT*scaleB};
+    ctx.beginPath();ctx.moveTo(Atop.x,Atop.y);
+    if(drift>GATE){
+      jp[0]+=0.16+drift*0.1;jp[1]+=0.14+drift*0.09;
+      var j1=edgeJit(Atop.x,Atop.y,Btop.x,Btop.y,0.5,jp[0],1+drift*2.2);
+      var j2=edgeJit(Abot.x,Abot.y,Bbot.x,Bbot.y,0.5,jp[1],1+drift*2.2);
+      ctx.quadraticCurveTo(j1.x,j1.y,Btop.x,Btop.y);ctx.lineTo(Bbot.x,Bbot.y);ctx.quadraticCurveTo(j2.x,j2.y,Abot.x,Abot.y);
+    }else{ctx.lineTo(Btop.x,Btop.y);ctx.lineTo(Bbot.x,Bbot.y);ctx.lineTo(Abot.x,Abot.y);}
+    ctx.closePath();ctx.fillStyle=rgba(inkColor,0.5);ctx.fill();ctx.strokeStyle=rgba(inkColor,0.8);ctx.lineWidth=1.5;ctx.stroke();
+  }
+  function drawRoundLive(g){
+    var r=g.r,tipDist=Math.max(r,r+drift*(r*2.6));
+    var hDx=Math.cos(heading),hDy=Math.sin(heading);
+    var Tx=core.x-hDx*tipDist,Ty=core.y-hDy*tipDist;
+    var phi=Math.atan2(Ty-core.y,Tx-core.x),ratio=Math.min(r/tipDist,1),beta=Math.acos(ratio);
+    var p1a=phi+beta,p2a=phi-beta;
+    var P1x=core.x+r*Math.cos(p1a),P1y=core.y+r*Math.sin(p1a),P2x=core.x+r*Math.cos(p2a),P2y=core.y+r*Math.sin(p2a);
+    ctx.beginPath();ctx.arc(core.x,core.y,r,p1a,p2a+Math.PI*2,false);
+    if(drift>GATE&&beta>0.02){
+      jp[2]+=0.15+drift*0.1;jp[3]+=0.16+drift*0.11;
+      var e1=edgeJit(P2x,P2y,Tx,Ty,0.5,jp[2],1+drift*1.8),e2=edgeJit(Tx,Ty,P1x,P1y,0.5,jp[3],1+drift*1.8);
+      ctx.quadraticCurveTo(e1.x,e1.y,Tx,Ty);ctx.quadraticCurveTo(e2.x,e2.y,P1x,P1y);
+    }else{ctx.lineTo(Tx,Ty);}
+    ctx.closePath();ctx.fillStyle=rgba(inkColor,0.5);ctx.fill();ctx.strokeStyle=rgba(inkColor,0.8);ctx.lineWidth=1.5;ctx.stroke();
+  }
+  var raf;
+  function loop(){
+    var speed=down?(window._bSpeed||0):0,target=Math.max(0,Math.min(speed/300,1));
+    driftVel+=(target-drift)*0.10;driftVel*=0.72;drift+=driftVel;drift=Math.max(0,Math.min(drift,1));
+    if(drift<0.002)drift=0;
+    if(down&&speed>3){var diff=Math.atan2(Math.sin(heading-prevHeadingT),Math.cos(heading-prevHeadingT));twistS+=(Math.max(-0.5,Math.min(diff*2.2,0.5))-twistS)*0.25;}
+    else{twistS+=(0-twistS)*0.2;}
+    prevHeadingT=heading;
+    ctx.clearRect(0,0,W,H);
+    var g=metrics();
+    if(g.type==='flat')drawFlatLive(g);else drawRoundLive(g);
+    ctx.fillStyle=rgba(inkColor,0.6);ctx.beginPath();ctx.arc(core.x,core.y,2,0,Math.PI*2);ctx.fill();
+    raf=requestAnimationFrame(loop);
+  }
+  window.addEventListener('resize',resizeAll);
+  resizeAll();loop();
+  setCleanup(function(){cancelAnimationFrame(raf);window.removeEventListener('resize',resizeAll);});
+}
+
+/* ---------------- DEMO: medium definition ---------------- */
+function initMediumDemo(shell){
+  shell.innerHTML =
+    '<div class="controls">'+
+    '<button id="mp0" class="active">Watercolor</button><button id="mp1">Gouache</button><button id="mp2">Oil</button><button id="mp3">Ink</button>'+
+    '</div>'+
+    '<div class="controls">'+
+    '<label>Watery <input type="range" id="mVisc" min="0" max="1" step="0.01" value="0.08"> Buttery</label>'+
+    '<label>Spreads <input type="range" id="mTens" min="0" max="1" step="0.01" value="0.1"> Beads</label>'+
+    '</div>'+
+    '<div style="margin:0 0 10px;"><span id="mBadge" style="font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:20px;border:1px solid var(--border);">Rewettable</span> <span id="mNote" style="font-size:12.5px;color:var(--text-dim);"></span></div>'+
+    '<canvas id="mCv" style="height:140px;"></canvas>';
+  var cv=shell.querySelector('#mCv'),ctx=cv.getContext('2d');
+  var viscEl=shell.querySelector('#mVisc'),tensEl=shell.querySelector('#mTens');
+  var PRESETS=[
+    {name:'Watercolor',visc:0.08,tens:0.1,rw:true,note:'Reactivates with water even after fully dry.',c:'#378ADD'},
+    {name:'Gouache',visc:0.42,tens:0.28,rw:true,note:'Reactivates with water, less freely than watercolor.',c:'#D4537E'},
+    {name:'Oil',visc:0.88,tens:0.72,rw:false,note:'Cures permanently once dry.',c:'#D85A30'},
+    {name:'Ink',visc:0.15,tens:0.05,rw:false,note:'Sets fast and permanent, despite starting thin.',c:'#534AB7'}
+  ];
+  var cur=0;
+  function seedFor(v,t){var s=Math.round((v*137+t*971)*1000)%2147483647;if(s<=0)s+=2147483646;return function(){s=(s*16807)%2147483647;return (s-1)/2147483646;};}
+  function draw(){
+    var v=parseFloat(viscEl.value),t=parseFloat(tensEl.value);
+    var sz=fitCanvas(cv,ctx),W=sz.w,H=sz.h,cy=H/2;
+    ctx.clearRect(0,0,W,H);
+    var col=PRESETS[cur].c,rnd=seedFor(v,t),x0=W*0.08,x1=W*0.92,coreW=10+v*22;
+    if(v<0.5){
+      var haloReach=(1-v)*40*(1-t*0.7);
+      for(var i=0;i<26;i++){
+        var x=x0+(x1-x0)*rnd(),off=(rnd()-0.5)*(coreW+haloReach*1.6),rad=4+rnd()*haloReach*0.6;
+        ctx.fillStyle=col+Math.round((0.03+0.05*(1-t))*255).toString(16).padStart(2,'0');
+        ctx.beginPath();ctx.arc(x,cy+off*0.3,rad,0,Math.PI*2);ctx.fill();
+      }
+    }
+    ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle=col+'cc';ctx.lineWidth=coreW;
+    ctx.beginPath();ctx.moveTo(x0,cy);ctx.lineTo(x1,cy);ctx.stroke();
+    if(t>0.4){
+      var nBeads=Math.round(t*10);
+      for(var i2=0;i2<nBeads;i2++){
+        var x2=x0+(x1-x0)*((i2+0.5)/nBeads)+(rnd()-0.5)*14,rad2=coreW*0.5*(0.7+t*0.6)*(0.7+rnd()*0.6);
+        ctx.fillStyle=col+'e6';ctx.beginPath();ctx.arc(x2,cy+(rnd()-0.5)*coreW*0.3,rad2,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#ffffff33';ctx.beginPath();ctx.arc(x2-rad2*0.3,cy-rad2*0.3+(rnd()-0.5)*coreW*0.3,rad2*0.28,0,Math.PI*2);ctx.fill();
+      }
+    }
+    if(v>0.55){
+      ctx.strokeStyle=col+'55';
+      for(var i3=0;i3<5;i3++){var yy=cy+(i3-2)*coreW*0.16;ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x0+10,yy);ctx.lineTo(x1-10,yy+(rnd()-0.5)*4);ctx.stroke();}
+    }
+  }
+  function pre(i){
+    cur=i;var p=PRESETS[i];viscEl.value=p.visc;tensEl.value=p.tens;
+    [0,1,2,3].forEach(function(k){var b=shell.querySelector('#mp'+k);b.classList.toggle('active',k===i);if(k===i){b.style.color=PRESETS[k].c;b.style.borderColor=PRESETS[k].c;}else{b.style.color='';b.style.borderColor='';}});
+    var badge=shell.querySelector('#mBadge');badge.textContent=p.rw?'Rewettable':'Not rewettable';badge.style.color=p.rw?'#1D9E75':'#888';badge.style.borderColor=p.rw?'#1D9E75':'#ccc';
+    shell.querySelector('#mNote').textContent=p.note;
+    draw();
+  }
+  [0,1,2,3].forEach(function(i){shell.querySelector('#mp'+i).onclick=function(){pre(i);};});
+  viscEl.oninput=draw;tensEl.oninput=draw;
+  window.addEventListener('resize',draw);
+  pre(0);
+  setCleanup(function(){window.removeEventListener('resize',draw);});
+}
+
+/* ---------------- DEMO: flow behavior ---------------- */
+function initFlowDemo(shell){
+  shell.innerHTML=
+    '<div class="controls">'+
+    '<button id="fp0" class="active">Watercolor</button><button id="fp1">Gouache</button><button id="fp2">Oil</button><button id="fp3">Ink</button>'+
+    '<button id="fClear">Clear</button></div>'+
+    '<div class="controls"><label>Flat <input type="range" id="fTilt" min="-1" max="1" step="0.02" value="0"> Steep tilt</label></div>'+
+    '<canvas id="fCv" style="height:240px;"></canvas>'+
+    '<p class="hint">Click to drop paint, then compare tilt sensitivity across mediums.</p>';
+  var cv=shell.querySelector('#fCv'),ctx=cv.getContext('2d');
+  var tiltEl=shell.querySelector('#fTilt');
+  var PRESETS=[
+    {name:'Watercolor',maxR:60,spreadT:2.0,grav:1.0,soft:0.9,c:'55,138,221'},
+    {name:'Gouache',maxR:34,spreadT:1.3,grav:0.4,soft:0.5,c:'212,83,126'},
+    {name:'Oil',maxR:13,spreadT:2.8,grav:0.04,soft:0.12,c:'216,90,48'},
+    {name:'Ink',maxR:44,spreadT:0.5,grav:0.85,soft:0.6,c:'83,74,183'}
+  ];
+  var cur=0,drops=[],raf,W=0,H=0;
+  function ease(x){return 1-Math.pow(1-x,3);}
+  function resize(){var sz=fitCanvas(cv,ctx);W=sz.w;H=sz.h;}
+  function frame(){
+    var now=performance.now();ctx.clearRect(0,0,W,H);
+    for(var i=0;i<drops.length;i++){
+      var dp=drops[i],p=PRESETS[dp.pi],el=Math.min((now-dp.t0)/1000/p.spreadT,1),eR=ease(el),radius=4+eR*p.maxR;
+      var tilt=dp.tilt,driftY=eR*p.grav*p.maxR*1.7*Math.max(tilt,0)+eR*p.grav*p.maxR*0.15,driftX=eR*p.grav*p.maxR*0.7*tilt*0.4;
+      var cx=dp.x+driftX,cy=dp.y+driftY,nRings=Math.round(4+p.soft*10);
+      for(var r2=nRings;r2>=1;r2--){
+        var frac=r2/nRings,rr=radius*frac,a=(1-frac)*(0.10+p.soft*0.16)+(frac<0.3?0.22:0);
+        ctx.fillStyle='rgba('+p.c+','+Math.min(a,0.5).toFixed(3)+')';ctx.beginPath();ctx.arc(cx,cy,Math.max(rr,2),0,Math.PI*2);ctx.fill();
+      }
+    }
+    raf=requestAnimationFrame(frame);
+  }
+  cv.addEventListener('pointerdown',function(e){var r=cv.getBoundingClientRect();drops.push({x:e.clientX-r.left,y:e.clientY-r.top,t0:performance.now(),pi:cur,tilt:parseFloat(tiltEl.value)});if(drops.length>7)drops.shift();});
+  function pre(i){cur=i;[0,1,2,3].forEach(function(k){var b=shell.querySelector('#fp'+k);if(k===i){b.style.borderColor='rgb('+PRESETS[k].c+')';b.style.color='rgb('+PRESETS[k].c+')';}else{b.style.borderColor='';b.style.color='';}});}
+  [0,1,2,3].forEach(function(i){shell.querySelector('#fp'+i).onclick=function(){pre(i);};});
+  shell.querySelector('#fClear').onclick=function(){drops=[];};
+  window.addEventListener('resize',resize);
+  resize();pre(0);frame();
+  setCleanup(function(){cancelAnimationFrame(raf);window.removeEventListener('resize',resize);});
+}
+
+/* ---------------- DEMO: drying curve ---------------- */
+function initDryingDemo(shell){
+  shell.innerHTML=
+    '<div class="controls">'+
+    '<button id="dw0" class="active">Watercolor</button><button id="dw1">Gouache</button><button id="dw2">Oil</button><button id="dw3">Ink</button>'+
+    '</div>'+
+    '<div class="controls"><label>Fast <input type="range" id="dSpd" min="0.3" max="3" step="0.1" value="1"> Slow</label>'+
+    '<button id="dPlay">▶ Play drying</button> <span id="dOut" style="font-weight:600;">Wet (100%)</span></div>'+
+    '<canvas id="dCv" style="height:220px;"></canvas>';
+  var cv=shell.querySelector('#dCv'),ctx=cv.getContext('2d'),spd=shell.querySelector('#dSpd'),out=shell.querySelector('#dOut');
+  var M={watercolor:{tau:8,c:'#378ADD',id:'dw0'},gouache:{tau:18,c:'#D4537E',id:'dw1'},oil:{tau:60,c:'#D85A30',id:'dw2'},ink:{tau:4,c:'#534AB7',id:'dw3'}};
+  var cur='watercolor',sp=1,af,W=0,H=0;
+  function et(){return M[cur].tau*sp;}
+  function wt(t){return Math.exp(-t/et());}
+  function gs(w){return w>=0.7?'Wet':w>=0.4?'Damp':w>=0.1?'Tacky':'Dry';}
+  var PL;
+  function resize(){var sz=fitCanvas(cv,ctx);W=sz.w;H=sz.h;PL={x:44,y:14,w:W-56,h:H-44};draw();}
+  function yW(w){return PL.y+(1-w)*PL.h;}
+  function xT(t,mx){return PL.x+(t/mx)*PL.w;}
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    var bands=[[0.7,1,'rgba(55,138,221,0.08)'],[0.4,0.7,'rgba(29,158,117,0.07)'],[0.1,0.4,'rgba(186,117,23,0.07)'],[0,0.1,'rgba(136,135,128,0.05)']];
+    bands.forEach(function(b){ctx.fillStyle=b[2];ctx.fillRect(PL.x,yW(b[1]),PL.w,yW(b[0])-yW(b[1]));});
+    ctx.strokeStyle='#ddd8cc';ctx.lineWidth=0.5;ctx.beginPath();ctx.moveTo(PL.x,PL.y+PL.h);ctx.lineTo(PL.x+PL.w,PL.y+PL.h);ctx.moveTo(PL.x,PL.y);ctx.lineTo(PL.x,PL.y+PL.h);ctx.stroke();
+    var tau=et(),mx=tau*4.5,n=140,d='';
+    ctx.beginPath();
+    for(var i=0;i<=n;i++){var t=(i/n)*mx,w=wt(t),x=xT(t,mx),y=yW(w);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
+    ctx.strokeStyle=M[cur].c;ctx.lineWidth=2.5;ctx.lineCap='round';ctx.stroke();
+  }
+  function pre(k){cur=k;[0,1,2,3].forEach(function(i){});Object.keys(M).forEach(function(key){var b=shell.querySelector('#'+M[key].id);if(key===cur){b.style.borderColor=M[key].c;b.style.color=M[key].c;}else{b.style.borderColor='';b.style.color='';}});out.textContent='Wet (100%)';draw();}
+  Object.keys(M).forEach(function(k){shell.querySelector('#'+M[k].id).onclick=function(){pre(k);};});
+  spd.oninput=function(){sp=parseFloat(spd.value);draw();};
+  shell.querySelector('#dPlay').onclick=function(){
+    if(af)cancelAnimationFrame(af);
+    var tau=et(),mx=tau*4.5,dur=5000,st=performance.now();
+    function step(now){
+      var p=Math.min((now-st)/dur,1),t=p*mx,w=wt(t);
+      draw();
+      ctx.fillStyle=M[cur].c;ctx.beginPath();ctx.arc(xT(t,mx),yW(w),5,0,Math.PI*2);ctx.fill();
+      out.textContent=gs(w)+' ('+Math.round(w*100)+'%)';
+      if(p<1)af=requestAnimationFrame(step);
+    }
+    af=requestAnimationFrame(step);
+  };
+  window.addEventListener('resize',resize);
+  resize();pre('watercolor');
+  setCleanup(function(){if(af)cancelAnimationFrame(af);window.removeEventListener('resize',resize);});
+}
+
+/* ---------------- DEMO: stroke interaction ---------------- */
+function initStrokeDemo(shell){
+  shell.innerHTML=
+    '<div class="controls">'+
+    '<button id="im0" class="active">Wet on wet</button><button id="im1">Wet on damp</button><button id="im2">Wet on tacky</button><button id="im3">Wet on dry</button><button id="im4">Lifting</button>'+
+    '<button id="iReset">Clear</button></div>'+
+    '<canvas id="iCv" style="height:220px;"></canvas>'+
+    '<p class="hint" id="iDesc"></p>';
+  var cv=shell.querySelector('#iCv'),ctx=cv.getContext('2d');
+  var mode=0,drawing=false,lpx=0,lpy=0,BW=10;
+  var ALP=[0.22,0.33,0.48,0.62,0.22];
+  var LABS=['Existing paint — Wet (85%)','Existing paint — Damp (55%)','Existing paint — Tacky (25%)','Existing paint — Dry (5%)','Existing paint — Wet (85%)'];
+  var DESC=[
+    'Paint flows freely into the wet surface — edges blur, colors blend.',
+    'Blooms and backruns form at the edges — wet paint pushes damp paint aside.',
+    'The tacky surface grabs the brush unevenly — mostly locked.',
+    'Clean hard-edged layering, no blend — where glazing lives.',
+    'Draw over the band to lift paint back off the surface.'
+  ];
+  var bandTop,bandH,W=0,H=0;
+  function resize(){var sz=fitCanvas(cv,ctx);W=sz.w;H=sz.h;bandTop=H*0.36;bandH=H*0.26;drawBand();}
+  function drawBand(){
+    ctx.clearRect(0,0,W,H);var a=ALP[mode],soft=mode===0||mode===1||mode===4;
+    if(soft){
+      var g1=ctx.createLinearGradient(0,bandTop-10,0,bandTop+10);g1.addColorStop(0,'rgba(55,138,221,0)');g1.addColorStop(1,'rgba(55,138,221,'+a+')');
+      ctx.fillStyle=g1;ctx.fillRect(0,bandTop-10,W,20);
+      ctx.fillStyle='rgba(55,138,221,'+a+')';ctx.fillRect(0,bandTop+10,W,bandH-20);
+      var g2=ctx.createLinearGradient(0,bandTop+bandH-10,0,bandTop+bandH+10);g2.addColorStop(0,'rgba(55,138,221,'+a+')');g2.addColorStop(1,'rgba(55,138,221,0)');
+      ctx.fillStyle=g2;ctx.fillRect(0,bandTop+bandH-10,W,20);
+    }else{ctx.fillStyle='rgba(55,138,221,'+a+')';ctx.fillRect(0,bandTop,W,bandH);}
+    ctx.font='11px sans-serif';ctx.fillStyle='#8a8474';ctx.textAlign='center';ctx.textBaseline='bottom';
+    ctx.fillText(LABS[mode],W/2,bandTop-(soft?16:8));
+  }
+  function ib(y){return y>=bandTop-6&&y<=bandTop+bandH+6;}
+  function doStamp(x,y,lx,ly){
+    var inside=ib(y);
+    switch(mode){
+      case 0:
+        if(inside){ctx.lineWidth=BW*2.2;ctx.strokeStyle='rgba(155,100,85,0.35)';ctx.lineCap='round';ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(x,y);ctx.stroke();
+          for(var i=0;i<5;i++){ctx.fillStyle='rgba(140,105,95,0.04)';ctx.beginPath();ctx.arc(x+(Math.random()-0.5)*BW*5,y+(Math.random()-0.5)*BW*5,BW*(1+Math.random()*2),0,Math.PI*2);ctx.fill();}
+        }else{ctx.lineWidth=BW;ctx.strokeStyle='rgba(216,90,48,0.85)';ctx.lineCap='round';ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(x,y);ctx.stroke();}
+        break;
+      case 1:
+        ctx.lineWidth=BW;ctx.strokeStyle='rgba(216,90,48,0.85)';ctx.lineCap='round';ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(x,y);ctx.stroke();
+        if(inside){var de=Math.min(Math.abs(y-bandTop),Math.abs(y-(bandTop+bandH)));var ne=de<BW*4;var nd=ne?6:2;
+          for(var j=0;j<nd;j++){var an=Math.random()*Math.PI*2,di=BW*(1.5+Math.random()*(ne?6:3));
+            ctx.fillStyle='rgba(55,138,221,'+(ne?0.06:0.03)+')';ctx.beginPath();ctx.arc(x+Math.cos(an)*di,y+Math.sin(an)*di,BW*(0.5+Math.random()*(ne?1.3:0.5)),0,Math.PI*2);ctx.fill();}
+        }
+        break;
+      case 2:
+        if(inside&&Math.random()<0.4)return;
+        ctx.lineWidth=BW*(inside?(0.15+Math.random()*0.55):1);ctx.globalAlpha=inside?(0.2+Math.random()*0.35):0.85;
+        ctx.strokeStyle='#D85A30';ctx.lineCap='round';ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(x,y);ctx.stroke();ctx.globalAlpha=1;
+        break;
+      case 3:
+        ctx.lineWidth=BW;ctx.strokeStyle='rgba(216,90,48,0.85)';ctx.lineCap='round';ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(x,y);ctx.stroke();
+        break;
+      case 4:
+        if(inside){ctx.globalCompositeOperation='destination-out';ctx.beginPath();ctx.arc(x,y,BW*1.8,0,Math.PI*2);ctx.fillStyle='rgba(0,0,0,0.09)';ctx.fill();ctx.globalCompositeOperation='source-over';}
+        break;
+    }
+  }
+  function gp(e){var r=cv.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};}
+  cv.addEventListener('pointerdown',function(e){cv.setPointerCapture(e.pointerId);var p=gp(e);lpx=p.x;lpy=p.y;drawing=true;});
+  cv.addEventListener('pointermove',function(e){if(!drawing)return;var p=gp(e);doStamp(p.x,p.y,lpx,lpy);lpx=p.x;lpy=p.y;});
+  function stop(){drawing=false;}
+  cv.addEventListener('pointerup',stop);cv.addEventListener('pointerleave',stop);cv.addEventListener('pointercancel',stop);
+  function sm(m){mode=m;
+    [0,1,2,3,4].forEach(function(i){var b=shell.querySelector('#im'+i);b.classList.toggle('active',i===m);});
+    shell.querySelector('#iDesc').textContent=DESC[m];drawBand();
+  }
+  [0,1,2,3,4].forEach(function(i){shell.querySelector('#im'+i).onclick=function(){sm(i);};});
+  shell.querySelector('#iReset').onclick=drawBand;
+  window.addEventListener('resize',resize);
+  resize();sm(0);
+  setCleanup(function(){window.removeEventListener('resize',resize);});
+}
+
+render();
+</script>
+</body>
+</html>
